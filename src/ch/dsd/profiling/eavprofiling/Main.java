@@ -18,11 +18,11 @@ abstract class IDBOperations {
   protected int[] attrs;
   protected static final String SQL_SELECT_FROM_WHERE = "SELECT %s FROM %s WHERE %s;";
   protected static final String SQL_UPDATE_SET_WHERE = "UPDATE %s SET %s WHERE %s;";
+	protected static final String SQL_INSERT_INTO_VALUES = "INSERT INTO %s VALUES (%s)";
   public static final String SQL_TABLE_NAME = "vectors";
   public static final String SQL_ID_NAME = "vector_id";
   public static final String SQL_DROP_TABLE = "DROP TABLE %s;";
-  public static final String SQL_CREATE_TABLE = "CREATE TABLE %s ( int "
-  + SQL_ID_NAME + " PRIMARY KEY GENERATING AS IDENTITY, %s);";
+  public static final String SQL_CREATE_TABLE = "CREATE TABLE %s;";
   public static final String SQL_COL_PREFIX = "C";
   public static final String SQL_STATE_NOT_EXIST = "42Y55";
 
@@ -42,13 +42,13 @@ abstract class IDBOperations {
 	    if (!sqlExc.getSQLState().equals(SQL_STATE_NOT_EXIST))
 		    throw sqlExc;
     }
-    s.execute(String.format(SQL_CREATE_TABLE, SQL_TABLE_NAME, getTableHeader()));
+    s.execute(String.format(SQL_CREATE_TABLE, getTableHeader()));
     setAttrs(attrs);
   }
 
-  public void populateTable(int nRows) throws SQLException {
+  public void populateTable(int nRows) throws Exception {
     for( int i = 0; i < nRows; i++ ) {
-      insert( randomDoubleValues( nCols ));
+      insert( randomDoubleValues( nCols ) );
     }
     this.nRows = nRows;
   }
@@ -57,17 +57,11 @@ abstract class IDBOperations {
     this.attrs = attrs;
   }
 
-  public double[] getValues(int idx) throws SQLException {
-    return null;
-  }
+  abstract public double[] getValues(int idx) throws SQLException;
 
-  public void writeValues(int idx, double[] vals) throws SQLException {
+  abstract public void writeValues(int idx, double[] vals) throws SQLException;
 
-  }
-
-  public void insert(double[]vals) throws SQLException {
-
-  }
+  abstract public void insert(double[]vals) throws Exception;
 
   protected double[] randomDoubleValues( int size ) {
       double[] res = new double[size];
@@ -81,8 +75,11 @@ abstract class IDBOperations {
 }
 
 class CondensedTable extends IDBOperations {
+
+	private static final String SQL_PRIMARY_KEY_ATTRIBUTES = "PRIMARY KEY GENERATING AS IDENTITY";
   private PreparedStatement psGetValues;
   private PreparedStatement psUpdateValues;
+	private PreparedStatement psInsertValues;
 
   public CondensedTable(Connection con, int nCols) {
       super(con, nCols);
@@ -91,29 +88,32 @@ class CondensedTable extends IDBOperations {
 
   @Override
   protected void setAttrs( int[] attrs ) throws SQLException {
-      StringBuilder sb = new StringBuilder();
-      super.setAttrs(attrs);
+    StringBuilder sb = new StringBuilder();
+    super.setAttrs(attrs);
 
-      if( attrs.length > 0 ) {
-          sb.append(getColName(attrs[0]));
-          sb.append("=?");
-      }
+    if( attrs.length > 0 ) {
+        sb.append(getColName(attrs[0]));
+        sb.append("=?");
+    }
 
-      for( int attr: attrs ) {
-          sb.append(",");
-          sb.append(getColName(attr));
-          sb.append("=?");
-      }
+    for( int attr: attrs ) {
+        sb.append(",");
+        sb.append(getColName(attr));
+        sb.append("=?");
+    }
 
-      if(!psGetValues.isClosed()) psGetValues.close();
-      psGetValues = con.prepareStatement(
-          String.format(SQL_SELECT_FROM_WHERE, getColumnNamesFromAttrs(), SQL_TABLE_NAME, SQL_ID_NAME + "=?;"));
-      if(!psUpdateValues.isClosed()) psUpdateValues.close();
-      psUpdateValues = con.prepareStatement(
-          String.format(SQL_UPDATE_SET_WHERE, SQL_TABLE_NAME, sb.toString(), SQL_ID_NAME+"=?;"));
+    if(!psGetValues.isClosed()) psGetValues.close();
+    psGetValues = con.prepareStatement(
+        String.format(SQL_SELECT_FROM_WHERE, getColumnNamesFromAttrs(), SQL_TABLE_NAME, SQL_ID_NAME + "=?;"));
+    if(!psUpdateValues.isClosed()) psUpdateValues.close();
+    psUpdateValues = con.prepareStatement(
+      String.format(SQL_UPDATE_SET_WHERE, SQL_TABLE_NAME, sb.toString(), SQL_ID_NAME+"=?;"));
+    if(!psInsertValues.isClosed()) psInsertValues.close();
+		psInsertValues = con.prepareStatement(
+				String.format(SQL_INSERT_INTO_VALUES, SQL_TABLE_NAME, getColumnPlaceholders(nCols))
+			);
 
   }
-
 
   @Override
   public double[] getValues(int idx) throws SQLException {
@@ -140,8 +140,14 @@ class CondensedTable extends IDBOperations {
   }
 
   @Override
-  public void insert(double[] vals) {
-
+  public void insert(double[] vals) throws Exception {
+	  if( vals.length == nCols ) {
+		  for (int i = 0; i < vals.length; i++) {
+			  psInsertValues.setDouble(i, vals[i]);
+		  }
+		  psInsertValues.executeUpdate();
+	  } else
+		  throw new Exception("insert(): Wrong number of values.");
   }
 
   private String getColumnNamesFromAttrs() {
@@ -172,14 +178,16 @@ class CondensedTable extends IDBOperations {
 	@Override
 	protected String getTableHeader() {
 		final StringBuilder sb = new StringBuilder();
-		if( nCols > 0 ) {
-			sb.append("C0 DOUBLE");
-			for( int i = 1; i < nCols; i++ ) {
-				sb.append(", C");
-				sb.append(i);
-				sb.append(" DOUBLE");
-			}
+		sb.append(SQL_TABLE_NAME);
+		sb.append("(");
+		sb.append(SQL_ID_NAME);
+		sb.append(" PRIMARY KEY GENERATING AS IDENTITY");
+		for( int i = 0; i < nCols; i++ ) {
+			sb.append(", C");
+			sb.append(i);
+			sb.append(" DOUBLE");
 		}
+		sb.append(")");
 		return sb.toString();
 	}
 
@@ -194,6 +202,8 @@ class EAV extends IDBOperations {
 	public EAV(Connection con, int nCols) {
 		super(con, nCols);
 	}
+
+
 
 	private String getAttributeList(int[] attrs) {
 		StringBuilder sb = new StringBuilder();
@@ -211,7 +221,8 @@ class EAV extends IDBOperations {
 
 	@Override
 	protected String getTableHeader() {
-		return "attribute INT, value DOUBLE";
+		return SQL_TABLE_NAME +
+			"( " + SQL_ID_NAME + "INT UNIQUE, attribute INT, value DOUBLE)";
 	}
 }
 
