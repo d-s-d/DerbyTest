@@ -1,234 +1,178 @@
 package ch.dsd.profiling.eavprofiling;
 
 import java.sql.*;
+import java.util.Arrays;
+import java.util.Properties;
 
 /*
 Profiling Parameters:
 - EAV vs. condensed layout
 - Table Size
 - Number of IO operations
-- Read, Write, Interleaved
 - Number of Attributes accessed
  */
 
-abstract class IDBOperations {
-  protected Connection con = null;
-  protected int nCols;
-  protected int nRows;
-  protected int[] attrs;
-  protected static final String SQL_SELECT_FROM_WHERE = "SELECT %s FROM %s WHERE %s;";
-  protected static final String SQL_UPDATE_SET_WHERE = "UPDATE %s SET %s WHERE %s;";
-	protected static final String SQL_INSERT_INTO_VALUES = "INSERT INTO %s VALUES (%s)";
-  public static final String SQL_TABLE_NAME = "vectors";
-  public static final String SQL_ID_NAME = "vector_id";
-  public static final String SQL_DROP_TABLE = "DROP TABLE %s;";
-  public static final String SQL_CREATE_TABLE = "CREATE TABLE %s;";
-  public static final String SQL_COL_PREFIX = "C";
-  public static final String SQL_STATE_NOT_EXIST = "42Y55";
-
-
-
-  public IDBOperations( Connection con, int nCols ) {
-    this.con = con;
-    this.nCols = nCols;
-  }
-
-  public void createTable(int[] attrs) throws SQLException {
-    Statement s;
-    s = this.con.createStatement();
-    try {
-	    s.execute(String.format(SQL_DROP_TABLE, SQL_TABLE_NAME));
-    } catch (SQLException sqlExc) {
-	    if (!sqlExc.getSQLState().equals(SQL_STATE_NOT_EXIST))
-		    throw sqlExc;
-    }
-    s.execute(String.format(SQL_CREATE_TABLE, getTableHeader()));
-    setAttrs(attrs);
-  }
-
-  public void populateTable(int nRows) throws Exception {
-    for( int i = 0; i < nRows; i++ ) {
-      insert( randomDoubleValues( nCols ) );
-    }
-    this.nRows = nRows;
-  }
-
-  protected void setAttrs( int[] attrs ) throws SQLException {
-    this.attrs = attrs;
-  }
-
-  abstract public double[] getValues(int idx) throws SQLException;
-
-  abstract public void writeValues(int idx, double[] vals) throws SQLException;
-
-  abstract public void insert(double[]vals) throws Exception;
-
-  protected double[] randomDoubleValues( int size ) {
-      double[] res = new double[size];
-      for( int i = 0; i < size; i++ ) {
-          res[i] = Math.random();
-      }
-      return res;
-  }
-
-	abstract protected String getTableHeader();
-}
-
-class CondensedTable extends IDBOperations {
-
-	private static final String SQL_PRIMARY_KEY_ATTRIBUTES = "PRIMARY KEY GENERATING AS IDENTITY";
-  private PreparedStatement psGetValues;
-  private PreparedStatement psUpdateValues;
-	private PreparedStatement psInsertValues;
-
-  public CondensedTable(Connection con, int nCols) {
-      super(con, nCols);
-  }
-
-
-  @Override
-  protected void setAttrs( int[] attrs ) throws SQLException {
-    StringBuilder sb = new StringBuilder();
-    super.setAttrs(attrs);
-
-    if( attrs.length > 0 ) {
-        sb.append(getColName(attrs[0]));
-        sb.append("=?");
-    }
-
-    for( int attr: attrs ) {
-        sb.append(",");
-        sb.append(getColName(attr));
-        sb.append("=?");
-    }
-
-    if(!psGetValues.isClosed()) psGetValues.close();
-    psGetValues = con.prepareStatement(
-        String.format(SQL_SELECT_FROM_WHERE, getColumnNamesFromAttrs(), SQL_TABLE_NAME, SQL_ID_NAME + "=?;"));
-    if(!psUpdateValues.isClosed()) psUpdateValues.close();
-    psUpdateValues = con.prepareStatement(
-      String.format(SQL_UPDATE_SET_WHERE, SQL_TABLE_NAME, sb.toString(), SQL_ID_NAME+"=?;"));
-    if(!psInsertValues.isClosed()) psInsertValues.close();
-		psInsertValues = con.prepareStatement(
-				String.format(SQL_INSERT_INTO_VALUES, SQL_TABLE_NAME, getColumnPlaceholders(nCols))
-			);
-
-  }
-
-  @Override
-  public double[] getValues(int idx) throws SQLException {
-      ResultSet rs;
-      psGetValues.setInt(0, idx);
-      rs = psGetValues.executeQuery();
-      if( rs.next() ) {
-          final double[] res = new double[attrs.length];
-          for( int i = 0; i < attrs.length; i++ ) {
-              res[i] = rs.getDouble(i+1);
-          }
-          return res;
-      }
-      return null;
-  }
-
-  @Override
-  public void writeValues(int idx, double[] vals) throws SQLException {
-      for(int i = 0; i < vals.length; i++ ) {
-          psUpdateValues.setDouble(i+1, vals[i]);
-      }
-      psUpdateValues.setInt(vals.length, idx);
-      psUpdateValues.executeUpdate();
-  }
-
-  @Override
-  public void insert(double[] vals) throws Exception {
-	  if( vals.length == nCols ) {
-		  for (int i = 0; i < vals.length; i++) {
-			  psInsertValues.setDouble(i, vals[i]);
-		  }
-		  psInsertValues.executeUpdate();
-	  } else
-		  throw new Exception("insert(): Wrong number of values.");
-  }
-
-  private String getColumnNamesFromAttrs() {
-      final StringBuilder sb = new StringBuilder();
-      if( attrs != null && attrs.length > 0 ) {
-          sb.append("C");
-          sb.append(attrs[0]);
-          for(int i = 1; i < attrs.length; i++) {
-              sb.append(", ");
-              sb.append(getColName(attrs[i]));
-          }
-      }
-      return sb.toString();
-  }
-
-  private String getColumnPlaceholders(int n) {
-      StringBuilder sb = new StringBuilder("(");
-      if( n > 0 ) {
-          sb.append("?");
-          for( int i = 1; i < n; i++ ) {
-              sb.append(",?");
-          }
-      }
-      sb.append(")");
-      return sb.toString();
-  }
-
-	@Override
-	protected String getTableHeader() {
-		final StringBuilder sb = new StringBuilder();
-		sb.append(SQL_TABLE_NAME);
-		sb.append("(");
-		sb.append(SQL_ID_NAME);
-		sb.append(" PRIMARY KEY GENERATING AS IDENTITY");
-		for( int i = 0; i < nCols; i++ ) {
-			sb.append(", C");
-			sb.append(i);
-			sb.append(" DOUBLE");
-		}
-		sb.append(")");
-		return sb.toString();
-	}
-
-	protected String getColName( int idx ) {
-		return SQL_COL_PREFIX + idx;
-	}
-
-}
-
-class EAV extends IDBOperations {
-
-	public EAV(Connection con, int nCols) {
-		super(con, nCols);
-	}
-
-
-
-	private String getAttributeList(int[] attrs) {
-		StringBuilder sb = new StringBuilder();
-
-		if( attrs.length > 0 ) {
-			sb.append("(");
-			sb.append(attrs[0]);
-		}
-		for(int attr: attrs) {
-			sb.append(",");
-			sb.append(attr);
-		}
-		return sb.toString();
-	}
-
-	@Override
-	protected String getTableHeader() {
-		return SQL_TABLE_NAME +
-			"( " + SQL_ID_NAME + "INT UNIQUE, attribute INT, value DOUBLE)";
-	}
-}
-
 public class Main {
 
-    public static void main(String[] args) {
-	// write your code here
-    }
+	static final int[] tableSizes = {1000};
+	static final int[] batchSizes = {100};
+	static final int[] attrs = {0,1,2,3,4,5};
+	static final int testRuns = 3;
+	static final int cols = 23;
+
+	private String dbName = "eavprofiling";
+	private String userName = "user1";
+	private static final String framework = "embedded";
+	private static final String driver = "org.apache.dergy.jdbc.EmbeddedDriver";
+	private static final String protocol = "jdbc:derby:";
+
+
+
+	private Connection con;
+
+	private void connect() throws SQLException {
+		Properties props = new Properties();
+		props.put("user", "user1");
+		props.put("password", "user1");
+		con = DriverManager.getConnection(protocol + dbName + ";create=true", props);
+		con.setAutoCommit(false);
+	}
+
+	private double[] getRandomValues( int n ) {
+		double[] res = new double[n];
+		for( int i = 0; i < n; i++ ) {
+			res[i] = Math.random();
+		}
+		return res;
+	}
+
+	private int getRandomId( int n ) {
+		double rnd = Math.random();
+		return (int) (rnd*((double)n));
+	}
+
+	private void printTestResults(
+		String test, int testrun, int tableSize, int batchSize, double avg, double stdd ) {
+		System.out.println(String.format(
+			"Performed Test: %s, testrun: %d, tableSize: %d, batchSize: %d, avg: %f, stdd: %f",
+			test, testrun, tableSize, batchSize, avg, stdd
+		));
+	}
+
+	public void go(String[] args) {
+		DeltaSequence deltaSeq = new DeltaSequence();
+		IDBOperations[] schemas = new IDBOperations[2];
+		schemas[0] = new STDTable();
+		schemas[1] = new EAVTable();
+		int lastSize = 0;
+
+		try {
+			connect();
+
+			for(IDBOperations schema: schemas) {
+				schema.setConnection(con);
+				schema.createTable(cols, attrs);
+			}
+
+			/* We assume ascending table sizes, so let's sort first. */
+			Arrays.sort(tableSizes);
+			/* Iterate over table sized */
+			for( int tableSize: tableSizes ) {
+				for( IDBOperations schema: schemas ) {
+					/* Fill in required vectors */
+					for( int i = 0; i < (tableSize - lastSize); i++ ) {
+						schema.insertVec(getRandomValues(cols));
+					}
+					schema.commit();
+					/* Perform tests */
+					for( int batchSize: batchSizes ) {
+						for( int r = 0; r < testRuns; r++ ) {
+							/* Perform random access */
+							for( int i = 0; i < batchSize; i++ ) {
+								final int id = getRandomId(tableSize);
+								deltaSeq.start();
+								schema.getVals(id);
+								deltaSeq.stop();
+							}
+							printTestResults("Random Access", r, tableSize, batchSize,
+								deltaSeq.getAverage(), deltaSeq.getStdDev());
+							deltaSeq.clear();
+						} /* testrun */
+
+						for( int r = 0; r < testRuns; r++ ) {
+							/* Get multiple vectors */
+							deltaSeq.start();
+							final double[][] res = schema.getRange(0, batchSize);
+							System.out.println("Retrieved " + res.length + " values.");
+							deltaSeq.stop();
+						} /* testrun */
+
+						printTestResults("Batch access ", testRuns, tableSize, batchSize,
+							deltaSeq.getAverage(), deltaSeq.getStdDev());
+					} /* batch Size */
+				} /* schema */
+			} /* table Size */
+
+			if (framework.equals("embedded"))
+			{
+				try {
+					DriverManager.getConnection("jdbc:derby:;shutdown=true");
+				}
+				catch (SQLException se)
+				{
+					if (( (se.getErrorCode() == 50000)
+						&& ("XJ015".equals(se.getSQLState()) ))) {
+						System.out.println("Derby shut down normally");
+					} else {
+						System.err.println("Derby did not shut down normally");
+						printSQLException(se);
+					}
+				}
+			}
+
+
+		} catch (SQLException sqlExc) {
+			sqlExc.printStackTrace(System.out);
+		} finally {
+			try {
+				/* dispose statements */
+				for( IDBOperations schema: schemas ) {
+					schema.dispose();
+				}
+
+				/* close connection */
+				con.close();
+			} catch (SQLException sqlExc ) {
+				sqlExc.printStackTrace(System.err);
+			}
+		}
+	}
+
+
+	/**
+	 * Prints details of an SQLException chain to <code>System.err</code>.
+	 * Details included are SQL State, Error code, Exception message.
+	 *
+	 * @param e the SQLException from which to print details.
+	 */
+	public static void printSQLException(SQLException e)
+	{
+		// Unwraps the entire exception chain to unveil the real cause of the
+		// Exception.
+		while (e != null)
+		{
+			System.err.println("\n----- SQLException -----");
+			System.err.println("  SQL State:  " + e.getSQLState());
+			System.err.println("  Error Code: " + e.getErrorCode());
+			System.err.println("  Message:    " + e.getMessage());
+			// for stack traces, refer to derby.log or uncomment this:
+			//e.printStackTrace(System.err);
+			e = e.getNextException();
+		}
+	}
+
+	public static void main(String[] args) {
+		new Main().go(args);
+	}
+
 }
