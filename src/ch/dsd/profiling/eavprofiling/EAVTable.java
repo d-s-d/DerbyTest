@@ -2,6 +2,7 @@ package ch.dsd.profiling.eavprofiling;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Created with IntelliJ IDEA.
@@ -17,27 +18,31 @@ public class EAVTable implements IDBOperations {
 	private static final String SQL_ATTR_NAME = "attribute_id";
 	private static final String SQL_VALUE_NAME = "value";
 	private static final String SQL_CREATE_TABLE =
-		String.format("CREATE TABLE %s (%s INT INDEXED, %s SMALLINT, %s DOUBLE);", SQL_TABLE_NAME, SQL_KEY_NAME,
+		String.format("CREATE TABLE %s (%s INT, %s SMALLINT, %s DOUBLE)", SQL_TABLE_NAME, SQL_KEY_NAME,
 			SQL_ATTR_NAME, SQL_VALUE_NAME);
 
 	private static final String SQL_SELECT_FROM_WHERE_ORDER_ATTR =
 
 		"SELECT " + SQL_VALUE_NAME + " FROM " + SQL_TABLE_NAME + " WHERE " + SQL_KEY_NAME + "=? AND " +
-			SQL_ATTR_NAME + " IN (%s) ORDER BY " + SQL_ATTR_NAME + ";";
+			SQL_ATTR_NAME + " IN (%s) ORDER BY " + SQL_ATTR_NAME;
 
 	private static final String SQL_SELECT_FROM_WHERE_ORDER_VECTOR_ATTR =
 		"SELECT " + SQL_VALUE_NAME + " FROM " + SQL_TABLE_NAME + " WHERE %s AND " + SQL_ATTR_NAME + " IN (%s) ORDER BY " +
-			SQL_KEY_NAME + ", " + SQL_ATTR_NAME + ";";
+			SQL_KEY_NAME + ", " + SQL_ATTR_NAME;
 
 	private static final String SQL_SELECT_FROM_ORDER_VECTOR_ATTR =
-		String.format("SELECT %s FROM %s WHERE %s IN (%%s) ORDER BY %s, %s;", SQL_VALUE_NAME,
+		String.format("SELECT %s FROM %s WHERE %s IN (%%s) ORDER BY %s, %s", SQL_VALUE_NAME,
 			SQL_TABLE_NAME, SQL_ATTR_NAME, SQL_KEY_NAME, SQL_ATTR_NAME);
 
 	private static final String SQL_INSERT_INTO_VALUES =
-		String.format("INSERT INTO %s VALUES (?,?,?);", SQL_TABLE_NAME);
+		String.format("INSERT INTO %s VALUES (?,?,?)", SQL_TABLE_NAME);
 
 	private static final String SQL_CREATE_INDEX =
-		"CREATE INDEX vectorAttrIdx ON " + SQL_TABLE_NAME + " ( " + SQL_KEY_NAME + " ASC, " + SQL_ATTR_NAME + " ASC);";
+		"CREATE INDEX vectorAttrIdx ON " + SQL_TABLE_NAME + " ( " + SQL_KEY_NAME + " ASC)";
+
+	/*
+	private static final String SQL_CREATE_INDEX =
+		"CREATE INDEX vectorAttrIdx ON " + SQL_TABLE_NAME + " ( " + SQL_KEY_NAME + " ASC, " + SQL_ATTR_NAME + " ASC)";*/
 
 	private int[] attrs;
 	private int cols;
@@ -48,6 +53,11 @@ public class EAVTable implements IDBOperations {
 	private PreparedStatement psFullTable;
 
 	private int currentId;
+
+	@Override
+	public String getName() {
+		return this.getClass().getName();
+	}
 
 	@Override
 	public void setConnection(Connection con) throws SQLException {
@@ -81,11 +91,12 @@ public class EAVTable implements IDBOperations {
 	public void insertVec(double[] vals) throws SQLException {
 		for( int i = 0; i < cols; i++ ) {
 			// using local state to ensure database consistency is a sin, I know.
-			psInsertValues.setInt(1, currentId++);
+			psInsertValues.setInt(1, currentId);
 			psInsertValues.setShort(2, (short) i);
 			psInsertValues.setDouble(3, vals[i]);
 			psInsertValues.addBatch();
 		}
+		currentId++;
 		psInsertValues.executeBatch();
 	}
 
@@ -102,7 +113,7 @@ public class EAVTable implements IDBOperations {
 		return res;
 	}
 
-	private double[][] getMultipleValues(PreparedStatement ps) throws SQLException {
+	private List<double[]> getMultipleValues(PreparedStatement ps) throws SQLException {
 		ResultSet rs;
 		int i = 0, l = attrs.length;
 		ArrayList<double[]> res = new ArrayList<double[]>();
@@ -118,18 +129,18 @@ public class EAVTable implements IDBOperations {
 			}
 			i++;
 		}
-		return (double[][]) res.toArray();
+		return res;
 	}
 
 	@Override
-	public double[][] getRange(int fromIdx, int toIdx) throws SQLException {
+	public List<double[]> getRange(int fromIdx, int toIdx) throws SQLException {
 		psRangeValues.setInt(1, fromIdx);
 		psRangeValues.setInt(2, toIdx);
 		return getMultipleValues(psRangeValues);
 	}
 
 	@Override
-	public double[][] getFullTable() throws SQLException {
+	public List<double[]> getFullTable() throws SQLException {
 		return getMultipleValues(psFullTable);
 	}
 
@@ -161,7 +172,7 @@ public class EAVTable implements IDBOperations {
 		));
 
 		this.psRangeValues = con.prepareStatement(String.format(
-			SQL_SELECT_FROM_WHERE_ORDER_VECTOR_ATTR, SQL_KEY_NAME + ">=? AND " + SQL_KEY_NAME + "<=?",
+			SQL_SELECT_FROM_WHERE_ORDER_VECTOR_ATTR, SQL_KEY_NAME + ">=? AND " + SQL_KEY_NAME + "<?",
 			getAttributeList(this.attrs)
 		));
 

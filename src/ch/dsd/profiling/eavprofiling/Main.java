@@ -1,8 +1,11 @@
 package ch.dsd.profiling.eavprofiling;
 
+/*
+Disclaimer: This code is for testing purposes only.
+ */
+
 import java.sql.*;
-import java.util.Arrays;
-import java.util.Properties;
+import java.util.*;
 
 /*
 Profiling Parameters:
@@ -14,19 +17,17 @@ Profiling Parameters:
 
 public class Main {
 
-	static final int[] tableSizes = {1000};
-	static final int[] batchSizes = {100};
+	static final int[] tableSizes = {1000, 10000, 100000, 1000000};
+	static final int[] batchSizes = {100, 200};
 	static final int[] attrs = {0,1,2,3,4,5};
 	static final int testRuns = 3;
 	static final int cols = 23;
 
-	private String dbName = "eavprofiling";
+	private String dbName = "derbyDB";
 	private String userName = "user1";
 	private static final String framework = "embedded";
-	private static final String driver = "org.apache.dergy.jdbc.EmbeddedDriver";
+	private static final String driver = "org.apache.derby.jdbc.EmbeddedDriver";
 	private static final String protocol = "jdbc:derby:";
-
-
 
 	private Connection con;
 
@@ -52,10 +53,10 @@ public class Main {
 	}
 
 	private void printTestResults(
-		String test, int testrun, int tableSize, int batchSize, double avg, double stdd ) {
+		int testrun, int tableSize, int batchSize, double avg, double stdd ) {
 		System.out.println(String.format(
-			"Performed Test: %s, testrun: %d, tableSize: %d, batchSize: %d, avg: %f, stdd: %f",
-			test, testrun, tableSize, batchSize, avg, stdd
+			"\t\t testrun: %d, tableSize: %d, batchSize: %d, avg: %f, stdd: %f",
+			testrun, tableSize, batchSize, avg, stdd
 		));
 	}
 
@@ -65,13 +66,17 @@ public class Main {
 		schemas[0] = new STDTable();
 		schemas[1] = new EAVTable();
 		int lastSize = 0;
+		List<double[]> res = new ArrayList<double[]>();
+		// HashMap<IDBOperations, ArrayList<double[]>> verificationData = new HashMap<IDBOperations, ArrayList<double[]>>();
 
 		try {
+			loadDriver();
 			connect();
 
 			for(IDBOperations schema: schemas) {
 				schema.setConnection(con);
 				schema.createTable(cols, attrs);
+				// verificationData.put(schema, new ArrayList<double[]>());
 			}
 
 			/* We assume ascending table sizes, so let's sort first. */
@@ -79,13 +84,29 @@ public class Main {
 			/* Iterate over table sized */
 			for( int tableSize: tableSizes ) {
 				for( IDBOperations schema: schemas ) {
+					System.out.println("================");
+					System.out.println(schema.getName());
+					System.out.println("================");
+					// final List<double[]> verificationVectors = verificationData.get(schema);
+
 					/* Fill in required vectors */
+					System.out.print("\tFilling in table...");
+					final DeltaSequence fillSeq = new DeltaSequence();
 					for( int i = 0; i < (tableSize - lastSize); i++ ) {
-						schema.insertVec(getRandomValues(cols));
+						final double[] vec = getRandomValues(cols);
+						// verificationVectors.add(vec);
+						fillSeq.start();
+						schema.insertVec(vec);
+						fillSeq.stop();
 					}
+					printTestResults(0, tableSize-lastSize, 0, fillSeq.getAverage(), fillSeq.getStdDev());
+					System.out.println("committing...");
 					schema.commit();
+					System.out.println("done.");
 					/* Perform tests */
 					for( int batchSize: batchSizes ) {
+
+						System.out.println("\t= Random Access Test =");
 						for( int r = 0; r < testRuns; r++ ) {
 							/* Perform random access */
 							for( int i = 0; i < batchSize; i++ ) {
@@ -94,21 +115,40 @@ public class Main {
 								schema.getVals(id);
 								deltaSeq.stop();
 							}
-							printTestResults("Random Access", r, tableSize, batchSize,
+							printTestResults(r, tableSize, batchSize,
 								deltaSeq.getAverage(), deltaSeq.getStdDev());
 							deltaSeq.clear();
 						} /* testrun */
 
+						System.out.println("\t= Batch Test =");
 						for( int r = 0; r < testRuns; r++ ) {
 							/* Get multiple vectors */
 							deltaSeq.start();
-							final double[][] res = schema.getRange(0, batchSize);
-							System.out.println("Retrieved " + res.length + " values.");
+							res = schema.getRange(0, batchSize);
 							deltaSeq.stop();
 						} /* testrun */
 
-						printTestResults("Batch access ", testRuns, tableSize, batchSize,
+						printTestResults(testRuns, tableSize, batchSize,
 							deltaSeq.getAverage(), deltaSeq.getStdDev());
+
+						/* Verify batch result
+						boolean verifySuccess = true;
+						if( res != null ) {
+							int sz = res.size();
+							for( int i = 0; i < sz; i++ ) {
+								double[] vecRes = res.get(i);
+								double[] vecVer = verificationVectors.get(i);
+								for( int j = 0; j < vecRes.length; j++ ) {
+							    if(!verifySuccess) break;
+									if( vecRes[j] != vecVer[attrs[j]] ) {
+										verifySuccess = false;
+										break;
+									}
+								}
+							}
+							if(!verifySuccess)
+								System.out.println("Verification failed!");
+						} */
 					} /* batch Size */
 				} /* schema */
 			} /* table Size */
@@ -141,7 +181,7 @@ public class Main {
 				}
 
 				/* close connection */
-				con.close();
+				if( con != null ) con.close();
 			} catch (SQLException sqlExc ) {
 				sqlExc.printStackTrace(System.err);
 			}
@@ -168,6 +208,38 @@ public class Main {
 			// for stack traces, refer to derby.log or uncomment this:
 			//e.printStackTrace(System.err);
 			e = e.getNextException();
+		}
+	}
+
+	private void loadDriver() {
+        /*
+         *  The JDBC driver is loaded by loading its class.
+         *  If you are using JDBC 4.0 (Java SE 6) or newer, JDBC drivers may
+         *  be automatically loaded, making this code optional.
+         *
+         *  In an embedded environment, this will also start up the Derby
+         *  engine (though not any databases), since it is not already
+         *  running. In a client environment, the Derby engine is being run
+         *  by the network server framework.
+         *
+         *  In an embedded environment, any static Derby system properties
+         *  must be set before loading the driver to take effect.
+         */
+		try {
+			Class.forName(driver).newInstance();
+			System.out.println("Loaded the appropriate driver");
+		} catch (ClassNotFoundException cnfe) {
+			System.err.println("\nUnable to load the JDBC driver " + driver);
+			System.err.println("Please check your CLASSPATH.");
+			cnfe.printStackTrace(System.err);
+		} catch (InstantiationException ie) {
+			System.err.println(
+				"\nUnable to instantiate the JDBC driver " + driver);
+			ie.printStackTrace(System.err);
+		} catch (IllegalAccessException iae) {
+			System.err.println(
+				"\nNot allowed to access the JDBC driver " + driver);
+			iae.printStackTrace(System.err);
 		}
 	}
 

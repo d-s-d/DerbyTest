@@ -2,6 +2,7 @@ package ch.dsd.profiling.eavprofiling;
 
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Created with IntelliJ IDEA.
@@ -11,18 +12,18 @@ import java.util.ArrayList;
  */
 public class STDTable implements IDBOperations {
 	public static final String SQL_STATE_NOT_EXIST = "42Y55";
-	private static final String SQL_TABLE_NAME = "vectors_std";
+	private static final String SQL_TABLE_NAME = "vectorsStd";
 	private static final String SQL_COL_PREFIX = "C";
 	private static final String SQL_DROP_TABLE = "DROP TABLE " + SQL_TABLE_NAME;
 	private static final String SQL_KEY_NAME = "vector_id";
 	private static final String SQL_CREATE_TABLE =
-		"CREATE TABLE " + SQL_TABLE_NAME + "("+SQL_KEY_NAME+" PRIMARY KEY GENERATING AS IDENTITY, %s);";
+		"CREATE TABLE " + SQL_TABLE_NAME + "("+SQL_KEY_NAME+" INT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, %s)";
 	private static final String SQL_SELECT_FROM_WHERE =
-		"SELECT %s FROM " + SQL_TABLE_NAME + " WHERE %s;";
+		"SELECT %s FROM " + SQL_TABLE_NAME + " WHERE %s";
 	private static final String SQL_SELECT_FROM =
 		"SELECT %s FROM " + SQL_TABLE_NAME;
 	private static final String SQL_INSERT_INTO_VALUES =
-		"INSERT INTO " + SQL_TABLE_NAME + " (%s) VALUES (%s);";
+		"INSERT INTO " + SQL_TABLE_NAME + " (%s) VALUES (%s)";
 
 	private int cols;
 	private int[] attrs;
@@ -32,6 +33,11 @@ public class STDTable implements IDBOperations {
 	private PreparedStatement psInsertValues;
 	private PreparedStatement psRangeValues;
 	private PreparedStatement psFullTable;
+
+	@Override
+	public String getName() {
+		return this.getClass().getName();
+	}
 
 	@Override
 	public void setConnection(Connection con) {
@@ -47,8 +53,8 @@ public class STDTable implements IDBOperations {
 		try {
 			s.execute(String.format(SQL_DROP_TABLE));
 		} catch (SQLException sqlExc) {
-			if (!sqlExc.getSQLState().equals(SQL_STATE_NOT_EXIST))
-				throw sqlExc;
+			/* if (!sqlExc.getSQLState().equals(SQL_STATE_NOT_EXIST))
+				throw sqlExc;*/
 		}
 		s.execute(String.format(SQL_CREATE_TABLE, getColumnHeader()));
 		prepareStatements();
@@ -82,7 +88,7 @@ public class STDTable implements IDBOperations {
 	}
 
 	@Override
-	public double[][] getRange(int fromIdx, int toIdx) throws SQLException {
+	public List<double[]> getRange(int fromIdx, int toIdx) throws SQLException {
 		ResultSet rs;
 		final ArrayList<double[]> res = new ArrayList<double[]>();
 		psRangeValues.setInt(1, fromIdx);
@@ -96,11 +102,11 @@ public class STDTable implements IDBOperations {
 			res.add(vals);
 		}
 		rs.close();
-		return (double[][])res.toArray();
+		return res;
 	}
 
 	@Override
-	public double[][] getFullTable() throws SQLException {
+	public List<double[]> getFullTable() throws SQLException {
 		ResultSet rs;
 		final ArrayList<double[]> res = new ArrayList<double[]>();
 		rs = psFullTable.executeQuery();
@@ -112,7 +118,7 @@ public class STDTable implements IDBOperations {
 			res.add(vals);
 		}
 		rs.close();
-		return (double[][])res.toArray();
+		return res;
 	}
 
 	@Override
@@ -151,10 +157,14 @@ public class STDTable implements IDBOperations {
 
 	private String getColumnHeader() {
 		StringBuilder sb = new StringBuilder();
-		if(cols > 0)
+		if(cols > 0) {
 			sb.append(getColName(0));
+			sb.append(" DOUBLE");
+		}
 		for (int i = 1; i < cols; i++) {
+			sb.append(", ");
 			sb.append(getColName(i));
+			sb.append(" DOUBLE");
 		}
 		return sb.toString();
 	}
@@ -177,7 +187,7 @@ public class STDTable implements IDBOperations {
 			SQL_INSERT_INTO_VALUES, getColumnNames(), getColumnPlaceholders(this.cols))
 		);
 		psRangeValues = con.prepareStatement(String.format(
-			SQL_SELECT_FROM_WHERE, getColumnNamesFromAttrs(this.attrs), SQL_KEY_NAME + ">=? AND " + SQL_KEY_NAME +"=<?"
+			SQL_SELECT_FROM_WHERE, getColumnNamesFromAttrs(this.attrs), SQL_KEY_NAME + ">=? AND " + SQL_KEY_NAME +"<=?"
 		));
 		psFullTable = con.prepareStatement(String.format(
 			SQL_SELECT_FROM, getColumnNamesFromAttrs(this.attrs)
